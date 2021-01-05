@@ -45,11 +45,11 @@ const startService = async (options: ICommandOptions) => {
     tileIndexes[layer] = tileIndex;
     countLayers--;
     if (countLayers <= 0) {
-      console.log("All done. Listening on http://localhost:8123/");
+      console.log("All done. Listening on http://localhost:8080/");
     }
   });
 
-  const httpPort = options.port || process.env.PORT || 8123;
+  const httpPort = options.port || process.env.PORT || 8080;
   const app = express();
   app.use(cors());
   app.use(express.static(process.env.PUBLIC_FOLDER || options.static));

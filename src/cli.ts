@@ -33,7 +33,7 @@ export class CommandLineInterface {
       name: 'port',
       alias: 'p',
       type: Number,
-      defaultValue: 8123,
+      defaultValue: 8080,
       typeLabel: '[underline]{Number}',
       description: 'Port address'
     },
