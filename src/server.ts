@@ -52,7 +52,7 @@ const startService = async (options: ICommandOptions) => {
   const httpPort = options.port || process.env.PORT || 8080;
   const app = express();
   app.use(cors());
-  app.use('/', express.static('static'));
+  app.use('/static', express.static(path.resolve(process.env.PWD + '/../static')))
 
   const send404 = (res: Response) => {
     res.status(404).send(
