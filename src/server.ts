@@ -1,169 +1,84 @@
-import * as path from "path";
 import * as express from "express";
 import * as cors from "cors";
+import * as compression from 'compression'
+import * as chalk from 'chalk';
 import * as vtpbf from "vt-pbf";
-import { Request, Response } from "express";
-import { createTileIndex } from "./utils";
+import { createTile, getTile, send404 } from "./utils";
 import { ICommandOptions } from "./cli";
 import { IVectorTile, toFeatureCollection } from "./vt2geojson";
-import * as pgPromise from 'pg-promise'
+import { getLayers, ILayer } from "./layer-source";
+import connection from './database'
 
 /** GeojsonVT extent option */
-const extent = 4096;
-
-const emptyResponse = { tile: undefined, x: 0, y: 0, z: 0 };
+let layerFailure = false
 
 const startService = async (options: ICommandOptions) => {
   
-  // db connection
-  console.log(`Starting database connection...`);
-  const credentials = {
-    host: '20.50.124.143',
-    port: 5432,
-    database: 'iroads-network-db',
-    user: 'postgres',
-    password: '1Road5DB',
-    max: 30 // use up to 30 connections
-  }
-  const pgp = pgPromise({/* Initialization Options */})
-  const connection = pgp(credentials)
+  console.log(chalk.yellow(`Initializing...`));
+  console.log(chalk.yellow(`Fetching list of layers...`));
 
-  console.log(`Loading data...`);
-
-  const tileIndexes: { [key: string]: any } = {};
-  const layers: string[] = ['layer1'];
-  let countLayers = layers.length;
-  layers.forEach(async (layer) => {
-    console.log(`Processing layer ${layer}...`);
-    const tileIndex = await createTileIndex(layer, connection, {
-      extent,
+  const layers: ILayer[] = await getLayers().then(layers => {
+    console.log(chalk.green(`List of layers loaded.`))
+    return layers
+  }).catch(err => {
+    layerFailure = true
+    console.log(chalk.bold.red(`Error while fetching list of layers.`));
+    return err
+  });
+  const tiles: { [key: string]: any } = {};
+  
+  for (const layer of layers) {
+    if(layerFailure) {
+      console.log(chalk.bold.red(`Skipping further layer processing.`));
+      break;
+    }
+    console.log(chalk.yellow(`Processing layer ${layer.layerName}...`));
+    const tile = await createTile(layer, connection, {
+      extent: layer.extend,
       maxZoom: options.maxZoom,
       generateId: options.generatedId,
       promoteId: options.promoteId,
       buffer: options.buffer,
+    }).then(data => {
+      console.log(chalk.green(`Layer ${layer.layerName} loaded.`))
+      return data
+    }).catch(err => {
+      console.log(err)
+      layerFailure = true
+      console.log(chalk.bold.red(`Failed to load ${layer.layerName}.`))
     });
-    tileIndexes[layer] = tileIndex;
-    countLayers--;
-    if (countLayers <= 0) {
-      console.log("All done. Listening on http://localhost:8080/");
-    }
-  });
+    tiles[layer.layerName] = tile;
+  }
 
-  const httpPort = options.port || process.env.PORT || 8080;
+  if(layerFailure) {
+    console.log(chalk.bold.red(`One of the layers failed to load. Server initialization halted.`))
+    return false
+  }
+
   const app = express();
   app.use(cors());
-
-  const send404 = (res: Response) => {
-    res.status(404).send(
-      `<!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>iRoads - Map Demo</title>
-          <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
-          <script src="https://api.tiles.mapbox.com/mapbox-gl-js/v1.0.0/mapbox-gl.js"></script>
-          <link href="https://api.tiles.mapbox.com/mapbox-gl-js/v1.0.0/mapbox-gl.css" rel="stylesheet" />
-          <style>
-            body {
-              margin: 0;
-              padding: 0;
-            }
-            #map {
-              position: absolute;
-              top: 0;
-              bottom: 0;
-              width: 100%;
-            }
-          </style>
-        </head>
-        <body>
-          <div id="map"></div>
-          <script>
-            mapboxgl.accessToken = 'pk.eyJ1Ijoic2FiaXRobWsiLCJhIjoiY2tqMmg3bzJyMDBpYTJ6bm96eG03NTAwMyJ9.vb6GhDsYSQU_tAVOKNjDGQ';
-            var map = new mapboxgl.Map({
-              container: 'map',
-              style: 'mapbox://styles/mapbox/light-v10',
-              zoom: 16,
-              center: [77.00270298411137, 8.522177315218222],
-            });
-      
-            map.on('load', function() {
-              map.addLayer(
-                {
-                  id: 'mapillary',
-                  type: 'line',
-                  source: {
-                    tiles: ['http://34.221.6.51:8080/layer1/{z}/{x}/{y}.mvt'],
-                    type: 'vector',
-                    maxzoom: 22,
-                  },
-                  'source-layer': 'all',
-                  layout: {
-                    'line-cap': 'round',
-                    'line-join': 'round',
-                  },
-                  paint: {
-                    'line-opacity': 0.6,
-                    'line-color': 'rgb(53, 175, 109)',
-                    'line-width': 2,
-                  },
-                },
-                'waterway-label'
-              );
-            });
-      
-            map.addControl(new mapboxgl.NavigationControl());
-          </script>
-        </body>
-      </html>
-      `
-    );
-  };
-
-  const getTile = (req: Request, res: Response) => {
-    const layer = req.params["layer"];
-    if (!tileIndexes.hasOwnProperty(layer)) {
-      send404(res);
-      return emptyResponse;
-    }
-    const z = +req.params["z"];
-    const x = +req.params["x"];
-    const y = +req.params["y"];
-    const tile = tileIndexes[layer].getTile(z, x, y);
-    return { tile, x, y, z };
-  };
-
+  app.use(compression())
   app.get("/", (_, res) => send404(res));
 
-  app.get("/:layer/:z/:x/:y.geojson", (req, res) => {
-    const { tile, x = 0, y = 0, z = 0 } = getTile(req, res);
-    if (!tile || !tile.features) {
-      return res.json({});
-    }
-    const vectorTiles = tile.features as IVectorTile[];
-    res.json(toFeatureCollection(vectorTiles, x, y, z, extent));
+  app.use("/:layer/:z/:x/:y.*", (req, res, next) => {
+    tiles.hasOwnProperty(req.params["layer"]) ? next() : send404(res);
   });
 
-  app.get("/:layer/:z/:x/:y.vt", (req, res) => {
-    const { tile } = getTile(req, res);
-    if (!tile || !tile.features) {
-      return;
-    }
-    const vectorTiles = tile.features as IVectorTile[];
-    res.json(vectorTiles);
+  app.get("/:layer/:z/:x/:y.geojson", (req, res) => {
+    const { tile, x = 0, y = 0, z = 0 } = getTile(tiles, req);
+    if (!tile || !tile.features) return res.writeHead(204).end()
+    res.json(toFeatureCollection(tile.features as IVectorTile[], x, y, z));
   });
 
   app.get("/:layer/:z/:x/:y.mvt", (req, res) => {
-    const { tile } = getTile(req, res);
-    if (!tile || !tile.features) {
-      return;
-    }
-    /** Notice that I set the source-layer (for Mapbox GL) to all */
+    const { tile } = getTile(tiles, req);
+    if (!tile || !tile.features) return res.writeHead(204).end()
     res.send(Buffer.from(vtpbf.fromGeojsonVt({ all: tile })));
   });
-
+  
+  const httpPort = options.port || process.env.port || 8080;
   app.listen(httpPort, () =>
-    console.info(`Wait until data is loaded and processed...`)
+    console.info(`Server started listening at http://localhost:${httpPort}/..`)
   );
 };
 
